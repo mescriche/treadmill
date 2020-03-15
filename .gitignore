@@ -126,3 +126,4 @@ dmypy.json
 # Pyre type checker
 .pyre/
 pyboard.py
+.DS_Store
