@@ -1,4 +1,5 @@
-*~   # emacs backup files
+*~   
+.gitignore~
 pyboard.py  # tool file
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -125,3 +126,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+pyboard.py
