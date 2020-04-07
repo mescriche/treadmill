@@ -91,7 +91,7 @@ ipython_config.py
 #   However, in case of collaboration, if having platform-specific dependencies or dependencies
 #   having no cross-platform support, pipenv may install dependencies that don't work, or not
 #   install all needed dependencies.
-#Pipfile.lock
+# Pipfile.lock
 
 # celery beat schedule file
 celerybeat-schedule
@@ -125,5 +125,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# utility to work with mcu
 pyboard.py
+
+# apple file
+.DS_Store
+
 .DS_Store

@@ -11,8 +11,8 @@ class SlopeLeader(object):
     def read(self):
         self.adc.read_timed(self._buffer, self._timer) # resolution 256 
         value = sum(self._buffer) // len(self._buffer)
-        tilt = value / 256 # ratio to cover
-        return tilt
+        slope = value / 256 # ratio to cover
+        return slope
 
     def off(self):
         #value = self.read()

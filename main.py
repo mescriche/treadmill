@@ -35,6 +35,7 @@ while True:
     while uboard.isOn(): # control loop remain until start/stop button is pushed
         spd_mngr.control()
         slp_mngr.control()
+        uboard.running()
     else: #stop procedure
         mcu.red()
         uboard.stopping() # red light and three beeps
