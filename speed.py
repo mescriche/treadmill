@@ -1,59 +1,101 @@
 from pyb import Pin, ADC, Timer, delay, ExtInt, disable_irq, enable_irq
 from time import ticks_ms, ticks_us, ticks_diff, ticks_add
-from math import fabs, pow
+from math import fabs, pow, trunc
 from array import array
 from micropython import const
 
 import micropython
 micropython.alloc_emergency_exception_buf(100)
 
+class Speed(object):
+    def __init__(self,ref=0, act=0):
+        self.ref = ref # reference value
+        self.act = act # actual value
+    @property
+    def delta(self):
+        return self.ref - self.act
+    def __str__(self):
+        return '{0:.1f}-{1:.1f}'.format(self.ref, self.act)
+    def __repr__(self):
+        return '{0:.1f}-{1:.1f}'.format(self.ref, self.act)
+    
 class SpeedLeader(object):
-    M_MAX = const(10)
+    M_MAX = const(20)
     SPD_MAX = const(15) # 15 km/h
     def __init__(self):
         self._adc = ADC(Pin('rSPD'))
         self._timer = Timer(6, freq=100)
         self._buffer = bytearray(self.M_MAX)
-        
-    def read(self):
-        self._adc.read_timed(self._buffer, self._timer) # resolution 256 
+
+    @property
+    def speed(self):
+        self._adc.read_timed(self._buffer, self._timer) # resolution 256
         value = sum(self._buffer) // len(self._buffer)
-        speed = value * self.SPD_MAX / 256 #[km/h] 
+        speed = value * self.SPD_MAX / 256 #[km/h]
+        speed = trunc(speed * 10) / 10
+        #print('ref speed=', speed)
         return speed
 
     def off(self):
-        value = self.read()
-        #print('speed=', value)
+        value = self.speed
         return True if value <= 2.0 else False
 
 class SpeedMeter(object):
+    STEP = 0.20 + 0.02 #const(6.5 * math.pi / 100) # meters - wheel circunference 2*pi*r + 2mm 
     BUFFER_SIZE = const(6)
-    WEIGHTS = (const(0.5), const(0.25), const(0.125), const(0.0625), const(0.0625))
-    KFREQ = 0.22 * 3.6 # km/h
+    WEIGHTS = (0.4, 0.3, 0.2, 0.07, 0.03)
+
     def __init__(self):
         self._sample_times = array('L', 0 for i in range(self.BUFFER_SIZE))
-        self.extint =ExtInt(Pin('SPD'), ExtInt.IRQ_FALLING, Pin.PULL_UP, self.__callback__)
-        self.freq = 0
+        self.extint = ExtInt(Pin('SPD'), ExtInt.IRQ_FALLING, Pin.PULL_UP, self.__callback__)
+        self.reset()
+        
+    def reset(self):
+        self.counter = 0
+        self.end_counter = None
+        self.start_time = ticks_ms()
+        self.end_time = None
 
     def __callback__(self, line):
+        self.counter += 1
         for i in range(self.BUFFER_SIZE-1, 0, -1):
             self._sample_times[i]=self._sample_times[i-1]
         else: self._sample_times[0] = ticks_ms()
 
-    def read(self):
+    @property
+    def distance(self): #meters
         irq_state = disable_irq()
-        periods = [ticks_diff(self._sample_times[i], self._sample_times[i+1])\
-                   for i in range(self.BUFFER_SIZE-1)]
-        #print('periods',end='=')
-        #for item in periods: print(item, end=',')
-        self.period = sum([x*y for x,y in zip(self.WEIGHTS, periods)]) * pow(10,-3) #seconds
-        try: self.freq = 1/self.period
-        except: self.freq = 0
-        self.speed = self.freq * self.KFREQ #km/h
+        value = (self.counter - 1) * self.STEP
         enable_irq(irq_state)
-        #print('period[s]={:.3f}, freq[Hz]={:.1f}, speed[km/h]={:1f}'.format(self.period, self.freq, self.speed))
-        return self.speed
-        
+        return value
+    @property
+    def duration(self): # seconds
+        return ticks_diff(ticks_ms(), self.start_time) * pow(10, -3)
+
+    @property
+    def speed(self): #meters/second
+        irq_state = disable_irq()
+        periods = [ticks_diff(self._sample_times[i], self._sample_times[i+1]) \
+                   for i in range(self.BUFFER_SIZE-1)]
+        enable_irq(irq_state)
+        period = sum([x*y for x,y in zip(self.WEIGHTS, periods)]) * pow(10,-3) #seconds
+        speed = self.STEP / period if period > 0 else 0 # meters/second
+        return speed * 3.6 # m/s -> km/h
+    
+    def finish(self):
+        self.end_time = ticks_ms()
+        self.end_counter = self.counter
+
+    @property
+    def rt_data(self): #real time data
+        return self.speed, self.distance, self.duration
+    
+    @property
+    def sm_data(self): #summary data
+        distance =  (self.end_counter - 1) * self.STEP #meters
+        duration =  ticks_diff(self.end_time, self.start_time) * pow(10,-3) #seconds
+        speed =  (distance / duration) * 3.6 # m/s -> km/h
+        return speed, distance, duration
         
 class SpeedController(object):
     IW_LAPSE = const(1000) # increasing speed waiting lapse
@@ -64,26 +106,23 @@ class SpeedController(object):
         self.__lapse = 0
         Pin('SPD+').off()
         Pin('SPD-').off()
-        self._rspeed = 0
-        self._mspeed = 0
+        self.speed = Speed()
         #Pin('S/W').on()
         
-    def check(self, rspeed, mspeed):
+    def check(self, speed):
         self.__lapse = ticks_diff(ticks_ms(), self.__last_action_time)
         if self.__lapse < self.IW_LAPSE and self.__lapse < self.DW_LAPSE : return False
-        #print('rspeed[km/h]={:.1f} mspeed[km/h]={:.1f}'.format(self._rspeed, self._mspeed))
-        if fabs(round(rspeed - mspeed,2)) < 0.10: return False
-        self._rspeed = rspeed
-        self._mspeed = mspeed
+        if trunc(fabs(speed.delta)*10)/10 < 0.1: return False
+        self.speed = speed
         return True
 
     def execute(self): #leader speed, measured speed
-        if self._rspeed > self._mspeed and self.__lapse > self.IW_LAPSE:
+        if self.speed.delta > 0 and self.__lapse > self.IW_LAPSE:
             Pin('SPD+').on() # start increasing speed
             delay(1000)
             Pin('SPD+').off() # stop increasing speed
             self.__last_action_time = ticks_ms()
-        elif self._rspeed < self._mspeed  and self.__lapse > self.DW_LAPSE:
+        elif self.speed.delta < 0  and self.__lapse > self.DW_LAPSE:
             Pin('SPD-').on() # start decreasing speed
             delay(1000)
             Pin('SPD-').off() # start decreasing speed
@@ -103,22 +142,31 @@ class SpeedController(object):
 
 class SpeedManager(object):
     def __init__(self):
+        self.speed = Speed()
         self.leader = SpeedLeader()
         self.meter = SpeedMeter()
         self.cntrl = SpeedController()
+        self.file = open('data.csv', 'w')
+
+    def log(self):
+        self.file.write('{0:.1f},{1:.1f},{2:.1f}\n'.format(self.meter.duration, self.speed.ref, self.speed.act))    
 
     def start(self):
+        self.meter.reset()
         self.cntrl.start()
         
     def control(self):
-        rspeed = self.leader.read() #get reference speed
-        mspeed = self.meter.read()  #get actual speed
-        if self.cntrl.check(rspeed, mspeed): # check speed difference
+        self.speed.ref = self.leader.speed #get reference speed
+        self.speed.act = self.meter.speed  #get actual speed
+        #self.log()
+        if self.cntrl.check(self.speed): # check speed difference
             self.cntrl.execute() # take action to reduce speed difference
 
     def slow_down(self):
-        while self.meter.read() > 2.0:
+        self.meter.finish()
+        while self.meter.speed > 2.0:
             self.cntrl.slow_down()
+        self.file.close()
 
     def stop(self):
         self.cntrl.stop()
